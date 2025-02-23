@@ -15,7 +15,7 @@ def config_parser():
     parser.add_argument('--data_path', '-d', type=str, help='Path of events.npy to train')
     parser.add_argument('--output_dir', '-o', type=str, default='logs', help='Directory to save output')
     parser.add_argument('--t_start', type=float, default=0, help='Start time')
-    parser.add_argument('--t_end', type=float, default=4, help='End time')
+    parser.add_argument('--t_end', type=float, default=10, help='End time')
     parser.add_argument('--H', type=int, default=180, help='Height of frames')
     parser.add_argument('--W', type=int, default=240, help='Width of frames')
     parser.add_argument('--color_event', action='store_true', default=False, help='Whether to use color event')
@@ -32,8 +32,12 @@ def config_parser():
     return parser
 
 def main(args):
-    split_number = 3
+    split_number = 5
     writer = SummaryWriter(os.path.join(args.output_dir, args.exp_name))
+    events = []
+    model = []
+    optimizer = []
+    loss = []
     for i in range(2*split_number-1):
       diff_time = args.t_end-args.t_start
       events[i] = EventData(
@@ -41,77 +45,49 @@ def main(args):
       model[i] = EvINRModel(
           args.net_layers, args.net_width, H=events.H, W=events.W, recon_colors=args.color_event
           ).to(args.device)
-      optimizer = torch.optim.AdamW(params=model[i].net.parameters(), lr=3e-4)
-      print(f'Start training ...')
-      events[i].stack_event_frames(args.train_resolution)
+      optimizer[i] = torch.optim.AdamW(params=model[i].net.parameters(), lr=3e-4)
+    print(f'Start training ...')
     for i_iter in trange(1, args.iters + 1):
-        optimizer.zero_grad()
-        optimizer2.zero_grad()
-        optimizer3.zero_grad()
-
-        log_intensity_preds = model(events.timestamps)
-        loss = model.get_losses(log_intensity_preds, events.event_frames)
-
-        loss.backward()
+      for i in range(2*split_number-1):
+        events[i].stack_event_frames(args.train_resolution)
+        optimizer[i].zero_grad()
+        log_intensity_preds = model[i](events[i].timestamps)
+        loss[i] = model.get_losses(log_intensity_preds, events[i].event_frames)
+        loss[i].backward()
         optimizer.step()
-        log_intensity_preds2 = model2(events2.timestamps)
-        loss2 = model2.get_losses(log_intensity_preds2, events2.event_frames)
 
-        loss2.backward()
-        optimizer2.step()
-        log_intensity_preds3 = model3(events3.timestamps)
-        loss3 = model3.get_losses(log_intensity_preds3, events3.event_frames)
-
-        loss3.backward()
-        optimizer3.step()
         if i_iter % args.log_interval == 0:
             tqdm.write(f'iter {i_iter}, loss {loss.item():.4f}')
             writer.add_scalar('loss', loss.item(), i_iter)
 
         if not args.no_c2f and i_iter == (args.iters // 2):
-            events.stack_event_frames(args.train_resolution * 2)
-            events2.stack_event_frames(args.train_resolution * 2)
-            events3.stack_event_frames(args.train_resolution * 2)
+          for i in range(2*split_number-1):
+            events[i].stack_event_frames(args.train_resolution*2)
 
 
     with torch.no_grad():
-        val_timestamps = torch.linspace(0, 0.75, args.val_resolution).to(args.device).reshape(-1, 1)
-        log_intensity_preds = model(val_timestamps)
-        intensity_preds = model.tonemapping(log_intensity_preds).squeeze(-1)
-        for i in range(0, intensity_preds.shape[0]):
+        accumulation_number = 0
+        for i in range(2*split_number-1):
+          if i == 0:
+            val_timestamps = torch.linspace(0, 0.75, args.val_resolution*3//4).to(args.device).reshape(-1, 1)
+          elif i == 2*split_number-2:
+            val_timestamps = torch.linspace(0.25, 1, args.val_resolution*3//4).to(args.device).reshape(-1, 1)
+          else:
+            val_timestamps = torch.linspace(0.25, 0.75, args.val_resolution//2).to(args.device).reshape(-1, 1)
+          log_intensity_preds = model[i](val_timestamps)
+          intensity_preds = model[i].tonemapping(log_intensity_preds).squeeze(-1)
+          for j in range(0, intensity_preds.shape[0]):
             intensity1 = intensity_preds[i].cpu().detach().numpy()
             image_data = (intensity1*255).astype(np.uint8)
-
             # 将 NumPy 数组转换为 PIL 图像对象
             image = Image.fromarray(image_data)
-            output_path = os.path.join('/content/EvINR/logs', 'output_image_{}.png'.format(i))
+            output_path = os.path.join('/content/EvINR/logs', 'output_image_{}.png'.format(j+accumulation_number))
             image.save(output_path)
-        val_timestamps2 = torch.linspace(0.25, 0.75, args.val_resolution).to(args.device).reshape(-1, 1)
-        log_intensity_preds = model2(val_timestamps2)
-        intensity_preds = model2.tonemapping(log_intensity_preds).squeeze(-1)
-        for i in range(0, intensity_preds.shape[0]):
-            intensity1 = intensity_preds[i].cpu().detach().numpy()
-            image_data = (intensity1*255).astype(np.uint8)
-
-            # 将 NumPy 数组转换为 PIL 图像对象
-            image = Image.fromarray(image_data)
-            output_path = os.path.join('/content/EvINR/logs', 'output_image_{}.png'.format(i+args.val_resolution))
-            image.save(output_path)
-        val_timestamps3 = torch.linspace(0.25, 1, args.val_resolution).to(args.device).reshape(-1, 1)
-        log_intensity_preds = model3(val_timestamps3)
-        intensity_preds = model3.tonemapping(log_intensity_preds).squeeze(-1)
-        for i in range(0, intensity_preds.shape[0]):
-            intensity1 = intensity_preds[i].cpu().detach().numpy()
-            image_data = (intensity1*255).astype(np.uint8)
-
-            # 将 NumPy 数组转换为 PIL 图像对象
-            image = Image.fromarray(image_data)
-            output_path = os.path.join('/content/EvINR/logs', 'output_image_{}.png'.format(i+2*args.val_resolution))
-            image.save(output_path)
-
+          accumulation_number = accumulation_number + intensity_preds.shape[0]
 
 if __name__ == '__main__':
     parser = config_parser()
     args = parser.parse_args()
     main(args)
+
 
