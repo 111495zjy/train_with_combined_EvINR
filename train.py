@@ -29,33 +29,21 @@ def config_parser():
     parser.add_argument('--net_layers', type=int, default=3, help='Number of layers in the network')
     parser.add_argument('--net_width', type=int, default=512, help='Hidden dimension of the network')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use')
-
     return parser
 
 def main(args):
-    events = EventData(
-        args.data_path, args.t_start, args.t_end-2, args.H, args.W, args.color_event, args.event_thresh, args.device)
-    model = EvINRModel(
-        args.net_layers, args.net_width, H=events.H, W=events.W, recon_colors=args.color_event
-    ).to(args.device)
-    optimizer = torch.optim.AdamW(params=model.net.parameters(), lr=3e-4)
-    events2 = EventData(
-        args.data_path, args.t_start+1, args.t_end-1, args.H, args.W, args.color_event, args.event_thresh, args.device)
-    model2 = EvINRModel(
-        args.net_layers, args.net_width, H=events.H, W=events.W, recon_colors=args.color_event
-    ).to(args.device)
-    optimizer2 = torch.optim.AdamW(params=model2.net.parameters(), lr=3e-4)
-    events3 = EventData(
-        args.data_path, args.t_start+2, args.t_end, args.H, args.W, args.color_event, args.event_thresh, args.device)
-    model3 = EvINRModel(
-        args.net_layers, args.net_width, H=events.H, W=events.W, recon_colors=args.color_event
-    ).to(args.device)
-    optimizer3 = torch.optim.AdamW(params=model3.net.parameters(), lr=3e-4)
+    split_number = 3
     writer = SummaryWriter(os.path.join(args.output_dir, args.exp_name))
-    print(f'Start training ...')
-    events.stack_event_frames(args.train_resolution)
-    events2.stack_event_frames(args.train_resolution)
-    events3.stack_event_frames(args.train_resolution)
+    for i in range(2*split_number-1):
+      diff_time = args.t_end-args.t_start
+      events[i] = EventData(
+          args.data_path, i*diff_time//(2*split_number)+args.t_start, i*diff_time//(2*split_number)+diff_time//split_number+args.t_start, args.H, args.W, args.color_event, args.event_thresh, args.device)
+      model[i] = EvINRModel(
+          args.net_layers, args.net_width, H=events.H, W=events.W, recon_colors=args.color_event
+          ).to(args.device)
+      optimizer = torch.optim.AdamW(params=model[i].net.parameters(), lr=3e-4)
+      print(f'Start training ...')
+      events[i].stack_event_frames(args.train_resolution)
     for i_iter in trange(1, args.iters + 1):
         optimizer.zero_grad()
         optimizer2.zero_grad()
